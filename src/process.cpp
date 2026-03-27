@@ -30,6 +30,8 @@ Process::Process(ProcessDetails details, uint64_t current_time)
         total_time += burst_times[i];
     }
     remain_time = total_time;
+
+    burst_start_time = current_time;
 }
 
 Process::~Process()
@@ -89,7 +91,8 @@ double Process::getCpuTime() const
 
 double Process::getTotalRunTime() const
 {
-    return (double)remain_time / 1000.0;
+    // Changed to total_time
+    return (double)total_time / 1000.0;
 }
 
 double Process::getRemainingTime() const
@@ -128,8 +131,61 @@ void Process::interruptHandled()
 
 void Process::updateProcess(uint64_t current_time)
 {
-    // use `current_time` to update turnaround time, wait time, burst times, 
-    // cpu time, and remaining time
+    // Calculate elapsed time since last update and reset tracker
+    uint64_t elapsed_time = current_time - burst_start_time;
+    burst_start_time = current_time;
+    
+    // Accumulate turnaround time if process is active in the system
+    if (state != State::NotStarted && state != State::Terminated)
+    {
+        turn_time += elapsed_time;
+    }
+
+    // Accumulate wait time if process is waiting in the ready queue
+    if (state == State::Ready)
+    {
+        wait_time += elapsed_time;
+    }
+    
+    // Update execution metrics if process is actively running on CPU
+    else if (state == State::Running)
+    {
+        cpu_time += elapsed_time;
+        
+        if (burst_times[current_burst] > elapsed_time) {
+            burst_times[current_burst] -= elapsed_time;
+            remain_time -= elapsed_time;
+        } else {
+            // Handle CPU burst completion precisely to prevent underflow
+            uint64_t actual_elapsed = burst_times[current_burst];
+            remain_time -= actual_elapsed;
+            burst_times[current_burst] = 0;
+
+            // Terminate if all bursts are done; otherwise, transition to I/O
+            if (remain_time == 0) {
+                setState(State::Terminated, current_time); 
+            } else {
+                setState(State::IO, current_time);
+                current_burst++; // Advance to the I/O burst index
+            }
+        }
+    }
+    
+    // Deduct time from current I/O burst if process is in I/O state
+    else if (state == State::IO)
+    {
+        if (burst_times[current_burst] > elapsed_time) {
+            burst_times[current_burst] -= elapsed_time;
+        } else {
+            // Handle I/O completion and return to ready queue
+            burst_times[current_burst] = 0;
+            setState(State::Ready, current_time);
+            
+            if (current_burst < num_bursts - 1) {
+                current_burst++; // Advance to the next CPU burst index
+            }
+        }
+    }
 }
 
 void Process::updateBurstTime(int burst_idx, uint32_t new_time)
